@@ -18,8 +18,10 @@
 ##
 
 $skipCompletedTasks = $false
-
 $sourceToken = "SourceAccountToken"
+$destToken = "DestinationAccountToken"
+
+
 $sourceHeaders = @{ 
     "Authorization" = "Bearer $sourceToken"
     "Content-Type" = "application/json"
@@ -27,11 +29,12 @@ $sourceHeaders = @{
 $sourceLists = (Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/me/todo/lists" -Headers $sourceHeaders -Method Get).value
 $sourceLists | Format-Table id, displayName, wellknownListName
 
-$destToken = "DestinationAccountToken"
+
 $destHeaders = @{
     "Authorization" = "Bearer $destToken"
     "Content-Type" = "application/json"
 }
+
 
 
 # Get source lists and create corresponding destination lists
