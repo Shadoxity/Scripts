@@ -1,0 +1,136 @@
+##Script to migrate MS Todo accounts from one account to another
+#
+#
+#You can use graph explorer to get the token for the source and destination accounts: https://developer.microsoft.com/en-us/graph/graph-explorer
+#Source Account
+#Open graph explorer, click in the top right corner to log in with your source account. Run any query and under the run query bar click "Access Token"
+#Copy the token and paste it into the sourceToken variable below
+#
+#Destination Account
+#Open graph explorer, click in the top right corner to log in with your destination account. 
+#Click on the image of your logged in account and click "consent to permissions". consent to "tasks.readwrite"
+#Run any query and under the run query bar click "Access Token"
+#Copy the token and paste it into the destToken variable below
+#
+#Run the commands in the script below to copy the task lists and tasks from the source account to the destination account
+##
+#Set skipCompletedTasks to $true if you want to skip creating already completed tasks
+##
+
+$skipCompletedTasks = $false
+
+$sourceToken = "SourceAccountToken"
+$sourceHeaders = @{ 
+    "Authorization" = "Bearer $sourceToken"
+    "Content-Type" = "application/json"
+}
+$sourceLists = (Invoke-RestMethod -Uri "https://graph.microsoft.com/beta/me/todo/lists" -Headers $sourceHeaders -Method Get).value
+$sourceLists | Format-Table id, displayName, wellknownListName
+
+$destToken = "DestinationAccountToken"
+$destHeaders = @{
+    "Authorization" = "Bearer $destToken"
+    "Content-Type" = "application/json"
+}
+
+
+# Get source lists and create corresponding destination lists
+$sourceLists = @()
+$nextLink = "https://graph.microsoft.com/v1.0/me/todo/lists"
+
+while ($nextLink) {
+    $response = Invoke-RestMethod -Uri $nextLink -Headers $sourceHeaders -Method Get
+    $sourceLists += $response.value
+    $nextLink = $response.'@odata.nextLink'
+}
+
+$destLists = @()
+$nextLink = "https://graph.microsoft.com/v1.0/me/todo/lists"
+
+while ($nextLink) {
+    $response = Invoke-RestMethod -Uri $nextLink -Headers $destHeaders -Method Get
+    $destLists += $response.value
+    $nextLink = $response.'@odata.nextLink'
+}
+
+
+foreach ($sourceList in $sourceLists) {
+    Write-Host "Processing list: $($sourceList.displayName)"
+    
+    # Handle different list types
+    if ($sourceList.wellknownListName -ne "none") {
+        # For wellknown lists, find matching list in destination
+        $newList = $destLists | Where-Object { $_.wellknownListName -eq $sourceList.wellknownListName }
+        Write-Host "Matched wellknown list: $($sourceList.displayName) with destination list ID: $($newList.id)"
+    } else {
+        # Create new list in destination for custom lists
+        $newList = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/me/todo/lists" -Headers $destHeaders -Method Post -Body (@{
+            displayName = $sourceList.displayName
+        } | ConvertTo-Json)
+        Write-Host "Created new list: $($newList.displayName) with ID: $($newList.id)"
+    }
+
+    if (-not $newList) {
+        Write-Host "No matching destination list found for: $($sourceList.displayName)"
+        continue
+    }
+
+    # Get all tasks from source list
+    $sourceTasks = @()
+    $nextLink = "https://graph.microsoft.com/v1.0/me/todo/lists/$($sourceList.id)/tasks"
+    
+    while ($nextLink) {
+        $response = Invoke-RestMethod -Uri $nextLink -Headers $sourceHeaders -Method Get
+        $sourceTasks += $response.value
+        $nextLink = $response.'@odata.nextLink'
+    }
+    
+    Write-Host "Found $($sourceTasks.Count) tasks to migrate"
+
+
+    # Create each task in the new destination list
+
+    foreach ($task in $sourceTasks) {
+        if ($skipCompletedTasks -and $task.status -eq 'completed') {
+            Write-Host "Skipping completed task: $($task.title)"
+            continue
+        }
+        $newTask = @{
+            title = $task.title
+            importance = $task.importance
+            status = $task.status
+            categories = $task.categories
+            createdDateTime = $task.createdDateTime
+        }
+        
+        if ($task.dueDateTime) {
+            $newTask.dueDateTime = $task.dueDateTime
+        }
+        
+        if ($task.body.content) {
+            $newTask.body = @{
+                content = $task.body.content
+                contentType = $task.body.contentType
+            }
+        }
+        # Add completedDateTime if task is completed
+        if ($task.status -eq 'completed' -and $task.completedDateTime) {
+            $newTask.completedDateTime = $task.completedDateTime
+        }
+
+        # Add reminder if it exists
+        if ($task.reminderDateTime) {
+            $newTask.reminderDateTime = $task.reminderDateTime
+        }
+
+        # Add checklistItems if they exist
+        if ($task.checklistItems) {
+            $newTask.checklistItems = $task.checklistItems
+        }
+
+        $result = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/me/todo/lists/$($newList.id)/tasks" -Headers $destHeaders -Method Post -Body ($newTask | ConvertTo-Json -Depth 20)
+        Write-Host "Created task: $($result.title)"
+    }
+}
+
+Write-Host "Migration completed!"
